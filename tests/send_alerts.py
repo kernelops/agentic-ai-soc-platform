@@ -25,6 +25,7 @@ Examples
 --------
   python tests/send_alerts.py alice
   python tests/send_alerts.py bob --count 6
+  python tests/send_alerts.py bob --srcip 185.220.101.1   # public IP -> OTX hit
   python tests/send_alerts.py fixture sudo_privesc
   python tests/send_alerts.py file ./tests/fixtures/fim_change.json
   python tests/send_alerts.py bob --url http://localhost:8000/api/v1/alerts/wazuh
@@ -180,6 +181,7 @@ def scenario_alice(args) -> int:
     """Benign: one fail then a success from a normal user. Expect false positive."""
     now = datetime.now(timezone.utc)
     host, agent_ip, srcip, user = "prod-web-01", "10.0.0.20", "10.0.0.15", "alice"
+    srcip = args.srcip or srcip
     print("Scenario: ALICE (benign single-fail-then-success)")
     alerts = [
         build_ssh_failed(now, srcip, user, host, agent_ip, 51000),
@@ -192,6 +194,7 @@ def scenario_bob(args) -> int:
     """Attack: brute-force burst -> success -> priv-esc, all same attacker IP/user."""
     now = datetime.now(timezone.utc)
     host, agent_ip, srcip, user = "prod-db-01", "10.0.0.50", "10.0.0.99", "baduser"
+    srcip = args.srcip or srcip
     n = args.count
     print(f"Scenario: BOB (brute force x{n} -> login -> sudo priv-esc)")
     alerts = []
@@ -248,10 +251,24 @@ def main() -> int:
     parser.add_argument("--token", default=DEFAULT_TOKEN, help="Bearer token (default: $SOC_INGESTION_AUTH_TOKEN)")
     parser.add_argument("--delay", type=float, default=0.3, help="Seconds between sends (default: 0.3)")
 
-    sub = parser.add_subparsers(dest="scenario", required=True)
-    sub.add_parser("alice", help="benign single-fail-then-success").set_defaults(func=scenario_alice)
+    # Shared options for the generated scenarios (must sit on the subparsers so
+    # they can be passed *after* the subcommand, e.g. `bob --srcip ...`).
+    scenario_opts = argparse.ArgumentParser(add_help=False)
+    scenario_opts.add_argument(
+        "--srcip",
+        default=None,
+        help="Override the source IP for the alice/bob scenarios. Use a public "
+             "IP to exercise OTX threat-intel enrichment (the default 10.0.0.x "
+             "addresses are private and won't resolve in OTX).",
+    )
 
-    p_bob = sub.add_parser("bob", help="brute force -> login -> priv-esc")
+    sub = parser.add_subparsers(dest="scenario", required=True)
+    sub.add_parser(
+        "alice", parents=[scenario_opts],
+        help="benign single-fail-then-success",
+    ).set_defaults(func=scenario_alice)
+
+    p_bob = sub.add_parser("bob", parents=[scenario_opts], help="brute force -> login -> priv-esc")
     p_bob.add_argument("--count", type=int, default=5, help="number of failed logins (default: 5)")
     p_bob.set_defaults(func=scenario_bob)
 

@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     # --- AlienVault OTX ---
     otx_api_key: str = Field(default="", description="AlienVault OTX API key")
     otx_base_url: str = "https://otx.alienvault.com"
+    otx_cache_ttl_seconds: int = 3600  # Redis cache TTL for successful OTX lookups (1 hour)
+    otx_failure_cache_ttl_seconds: int = 120  # negative-cache TTL when OTX is unreachable/errors
+    # OTX read timeout. The /general endpoint can be slow for heavily-referenced
+    # IPs (large pulse payloads), so this is generous; the cost is paid once per
+    # IP then cached. Connect timeout is separate/short (see otx_connect_timeout).
+    otx_timeout_seconds: float = 15.0
+    otx_connect_timeout_seconds: float = 5.0  # fail fast if the host is unreachable
 
     # --- Slack ---
     slack_webhook_url: str = Field(default="", description="Slack incoming webhook URL")
@@ -48,6 +55,21 @@ class Settings(BaseSettings):
     brute_force_window_minutes: int = 5
     brute_force_then_login_window_minutes: int = 10
     priv_esc_window_minutes: int = 10
+
+    # --- Enrichment: asset criticality ---
+    # Hostname -> criticality (critical | high | medium | low). Hosts not listed
+    # here resolve to "unknown". Overridable via the SOC_ASSET_CRITICALITY_MAP
+    # env var as a JSON object, e.g. '{"prod-db-01": "critical"}'.
+    asset_criticality_map: dict[str, str] = Field(
+        default_factory=lambda: {
+            "prod-db-01": "critical",
+            "prod-web-01": "high",
+            "victim-kali": "high",
+            "staging-01": "medium",
+            "dev-vm-03": "low",
+        },
+        description="Hostname to asset-criticality mapping for enrichment",
+    )
 
     # --- Worker ---
     worker_poll_interval: float = 1.0  # seconds between Redis BRPOP calls

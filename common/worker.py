@@ -22,6 +22,7 @@ from common.database import (
 )
 from common.models import NormalizedAlert, CaseDocument, CaseStatus
 from correlation.engine import CorrelationEngine
+from enrichment.engine import EnrichmentEngine
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -44,6 +45,7 @@ _shutdown_event = asyncio.Event()
 # ---------------------------------------------------------------------------
 
 correlation_engine = CorrelationEngine()
+enrichment_engine = EnrichmentEngine()
 
 
 def _handle_signal(sig, frame):
@@ -59,31 +61,41 @@ async def process_alert(alert: NormalizedAlert) -> None:
     """
     Process a single alert through the pipeline.
 
-    Phase 2: Runs correlation and attaches a CorrelationContext to the case.
-    Later phases will add: enrichment → agent pipeline.
+    Phase 2-3: Runs correlation then enrichment and attaches both contexts.
+    Later phases will add: agent pipeline.
     """
     db = get_mongo_db()
 
     # --- Correlation ---
     correlation = await correlation_engine.correlate(alert)
 
+    # --- Enrichment (runs after correlation; historical sees prior cases) ---
+    enrichment = await enrichment_engine.enrich(alert)
+
     # Create a case document for this alert
     case = CaseDocument(
         alert=alert,
         correlation=correlation,
-        status=CaseStatus.CORRELATING,  # furthest stage reached so far
+        enrichment=enrichment,
+        status=CaseStatus.ENRICHING,  # furthest stage reached so far
     )
 
     # Write to MongoDB
     await db.cases.insert_one(case.model_dump(mode="json"))
+    otx = enrichment.otx_reputation
     logger.info(
-        "Case %s | alert %s | rule='%s' level=%d | pattern=%s related=%d",
+        "Case %s | alert %s | rule='%s' level=%d | pattern=%s related=%d | "
+        "asset=%s otx=%s hist=%d",
         case.case_id,
         alert.alert_id,
         alert.rule_description,
         alert.rule_level,
         correlation.pattern_matched or "none",
         correlation.related_alert_count,
+        enrichment.asset_criticality,
+        (f"malicious({otx.pulse_count})" if otx and otx.is_known_malicious
+         else "clean" if otx else "n/a"),
+        enrichment.historical_case_count,
     )
 
 
@@ -156,6 +168,7 @@ async def main():
 
     try:
         await correlation_engine.initialize()
+        await enrichment_engine.initialize()
         await worker_loop()
     finally:
         logger.info("Cleaning up connections...")
