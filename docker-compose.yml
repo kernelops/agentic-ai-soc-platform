@@ -1,0 +1,94 @@
+# =============================================================================
+# Agentic AI SOC Platform — Docker Compose
+# Phase 0: Infrastructure Skeleton
+# =============================================================================
+#
+# Services: FastAPI (ingestion), Redis, MongoDB, Pipeline Worker
+# Usage:    docker compose up --build -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis — alert queue + Dead Letter Queue
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: soc-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - soc-network
+
+  # ---------------------------------------------------------------------------
+  # MongoDB — case documents, alert history
+  # ---------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7
+    container_name: soc-mongodb
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - soc-network
+
+  # ---------------------------------------------------------------------------
+  # Ingestion Service — FastAPI receiving Wazuh webhooks
+  # ---------------------------------------------------------------------------
+  ingestion:
+    build:
+      context: .
+      dockerfile: ingestion/Dockerfile
+    container_name: soc-ingestion
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    networks:
+      - soc-network
+
+  # ---------------------------------------------------------------------------
+  # Pipeline Worker — reads from Redis, processes, writes to MongoDB
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: common/Dockerfile
+    container_name: soc-worker
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    networks:
+      - soc-network
+
+# ---------------------------------------------------------------------------
+# Volumes & Networks
+# ---------------------------------------------------------------------------
+volumes:
+  redis-data:
+  mongo-data:
+
+networks:
+  soc-network:
+    driver: bridge
