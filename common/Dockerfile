@@ -6,7 +6,8 @@ WORKDIR /app
 COPY common/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy common module
+# Copy modules the worker imports
 COPY common/ /app/common/
+COPY correlation/ /app/correlation/
 
 CMD ["python", "-m", "common.worker"]

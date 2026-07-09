@@ -42,9 +42,11 @@ class Settings(BaseSettings):
     chroma_persist_dir: str = "/app/data/chromadb"
 
     # --- Correlation ---
-    correlation_window_minutes: int = 30
+    correlation_window_minutes: int = 30  # broad lookback for prior-alert fetch
+    recent_alerts_retention_minutes: int = 35  # TTL for the recent_alerts store (>= lookback + buffer)
     brute_force_threshold: int = 3
     brute_force_window_minutes: int = 5
+    brute_force_then_login_window_minutes: int = 10
     priv_esc_window_minutes: int = 10
 
     # --- Worker ---

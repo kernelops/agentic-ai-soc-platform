@@ -21,6 +21,7 @@ from common.database import (
     close_redis,
 )
 from common.models import NormalizedAlert, CaseDocument, CaseStatus
+from correlation.engine import CorrelationEngine
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -38,6 +39,12 @@ logger = logging.getLogger("soc.worker")
 
 _shutdown_event = asyncio.Event()
 
+# ---------------------------------------------------------------------------
+# Pipeline stages (shared across the worker)
+# ---------------------------------------------------------------------------
+
+correlation_engine = CorrelationEngine()
+
 
 def _handle_signal(sig, frame):
     logger.info("Received signal %s — shutting down gracefully", sig)
@@ -45,32 +52,38 @@ def _handle_signal(sig, frame):
 
 
 # ---------------------------------------------------------------------------
-# Pipeline processing (Phase 0: simple pass-through)
+# Pipeline processing (Phase 2: correlation)
 # ---------------------------------------------------------------------------
 
 async def process_alert(alert: NormalizedAlert) -> None:
     """
     Process a single alert through the pipeline.
 
-    Phase 0: Creates a case document and writes it directly to MongoDB.
-    Later phases will add: correlation → enrichment → agent pipeline.
+    Phase 2: Runs correlation and attaches a CorrelationContext to the case.
+    Later phases will add: enrichment → agent pipeline.
     """
     db = get_mongo_db()
+
+    # --- Correlation ---
+    correlation = await correlation_engine.correlate(alert)
 
     # Create a case document for this alert
     case = CaseDocument(
         alert=alert,
-        status=CaseStatus.CLOSED,  # Phase 0: immediately closed
+        correlation=correlation,
+        status=CaseStatus.CORRELATING,  # furthest stage reached so far
     )
 
     # Write to MongoDB
     await db.cases.insert_one(case.model_dump(mode="json"))
     logger.info(
-        "Case %s created for alert %s (rule: %s, level: %d)",
+        "Case %s | alert %s | rule='%s' level=%d | pattern=%s related=%d",
         case.case_id,
         alert.alert_id,
         alert.rule_description,
         alert.rule_level,
+        correlation.pattern_matched or "none",
+        correlation.related_alert_count,
     )
 
 
@@ -142,6 +155,7 @@ async def main():
     logger.info("Starting SOC Pipeline Worker...")
 
     try:
+        await correlation_engine.initialize()
         await worker_loop()
     finally:
         logger.info("Cleaning up connections...")
