@@ -20,9 +20,10 @@ from common.database import (
     close_mongo,
     close_redis,
 )
-from common.models import NormalizedAlert, CaseDocument, CaseStatus
+from common.models import NormalizedAlert, EnrichedAlert, CaseDocument, CaseStatus
 from correlation.engine import CorrelationEngine
 from enrichment.engine import EnrichmentEngine
+from agents.pipeline import build_pipeline, run_pipeline
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -61,8 +62,8 @@ async def process_alert(alert: NormalizedAlert) -> None:
     """
     Process a single alert through the pipeline.
 
-    Phase 2-3: Runs correlation then enrichment and attaches both contexts.
-    Later phases will add: agent pipeline.
+    Correlation -> enrichment -> create case doc -> LangGraph agent pipeline.
+    The agent pipeline updates the same case document in place as it progresses.
     """
     db = get_mongo_db()
 
@@ -72,31 +73,42 @@ async def process_alert(alert: NormalizedAlert) -> None:
     # --- Enrichment (runs after correlation; historical sees prior cases) ---
     enrichment = await enrichment_engine.enrich(alert)
 
-    # Create a case document for this alert
+    # Create the case document (before the agent pipeline runs, so historical
+    # enrichment of subsequent alerts in the same incident can see it).
     case = CaseDocument(
         alert=alert,
         correlation=correlation,
         enrichment=enrichment,
-        status=CaseStatus.ENRICHING,  # furthest stage reached so far
+        status=CaseStatus.ENRICHING,
     )
-
-    # Write to MongoDB
     await db.cases.insert_one(case.model_dump(mode="json"))
     otx = enrichment.otx_reputation
     logger.info(
-        "Case %s | alert %s | rule='%s' level=%d | pattern=%s related=%d | "
-        "asset=%s otx=%s hist=%d",
-        case.case_id,
-        alert.alert_id,
-        alert.rule_description,
-        alert.rule_level,
-        correlation.pattern_matched or "none",
-        correlation.related_alert_count,
+        "Case %s | alert %s | rule='%s' level=%d | pattern=%s related=%d | asset=%s otx=%s hist=%d",
+        case.case_id, alert.alert_id, alert.rule_description, alert.rule_level,
+        correlation.pattern_matched or "none", correlation.related_alert_count,
         enrichment.asset_criticality,
         (f"malicious({otx.pulse_count})" if otx and otx.is_known_malicious
          else "clean" if otx else "n/a"),
         enrichment.historical_case_count,
     )
+
+    # --- Agentic pipeline (isolated: a pipeline failure must not kill the worker) ---
+    enriched = EnrichedAlert(alert=alert, correlation=correlation, enrichment=enrichment)
+    try:
+        final_state = await run_pipeline(enriched, case.case_id)
+        report = final_state.get("report")
+        logger.info(
+            "Case %s | pipeline done | stage=%s verdict=%s",
+            case.case_id, final_state.get("current_stage", "?"),
+            report.verdict.value if report else "n/a",
+        )
+    except Exception as exc:  # noqa: BLE001 - never let one alert crash the loop
+        logger.exception("Agent pipeline failed for case %s: %s", case.case_id, exc)
+        await db.cases.update_one(
+            {"case_id": case.case_id},
+            {"$set": {"status": CaseStatus.CLOSED.value, "pipeline_error": str(exc)}},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +181,7 @@ async def main():
     try:
         await correlation_engine.initialize()
         await enrichment_engine.initialize()
+        build_pipeline()  # compile the agent graph once up front
         await worker_loop()
     finally:
         logger.info("Cleaning up connections...")

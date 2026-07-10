@@ -10,9 +10,48 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Annotated, Any, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+
+# ---------------------------------------------------------------------------
+# Lenient numeric/bool types for LLM-populated fields
+# ---------------------------------------------------------------------------
+# Groq/Llama structured output sometimes emits numbers/bools as strings
+# (e.g. "initial_severity": "1"). Groq validates the tool call against the
+# JSON schema *server-side* and rejects a string where the schema says integer,
+# before Pydantic can coerce it. Typing these fields as Union[..., str] widens
+# the JSON schema to accept the string, and the BeforeValidator coerces it back
+# to the real type. Non-LLM code still reads plain int/float/bool at runtime.
+
+def _coerce_int(v: Any) -> Any:
+    if isinstance(v, str):
+        try:
+            return int(float(v.strip()))
+        except (ValueError, TypeError):
+            return 0
+    return v
+
+
+def _coerce_float(v: Any) -> Any:
+    if isinstance(v, str):
+        try:
+            return float(v.strip())
+        except (ValueError, TypeError):
+            return 0.0
+    return v
+
+
+def _coerce_bool(v: Any) -> Any:
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "y")
+    return v
+
+
+LenientInt = Annotated[Union[int, str], BeforeValidator(_coerce_int)]
+LenientFloat = Annotated[Union[float, str], BeforeValidator(_coerce_float)]
+LenientBool = Annotated[Union[bool, str], BeforeValidator(_coerce_bool)]
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +185,7 @@ class EnrichedAlert(BaseModel):
 
 class TriageOutput(BaseModel):
     alert_type: AlertType = AlertType.UNKNOWN
-    initial_severity: int = 1  # 1-10
+    initial_severity: LenientInt = 1  # 1-10
     reasoning: str = ""
 
 
@@ -156,14 +195,14 @@ class InvestigationOutput(BaseModel):
     baseline_comparison: str = ""
     matched_mitre_techniques: list[dict[str, str]] = Field(default_factory=list)
     verdict: Verdict = Verdict.UNVERIFIED
-    confidence_score: float = 0.0
-    final_severity: int = 1
+    confidence_score: LenientFloat = 0.0
+    final_severity: LenientInt = 1
     reasoning: str = ""
 
 
 class VerificationOutput(BaseModel):
-    verified: bool = False
-    confidence_score: float = 0.0
+    verified: LenientBool = False
+    confidence_score: LenientFloat = 0.0
     rejection_reason: str = ""
     evidence_check: str = ""
     mitre_check: str = ""
@@ -173,7 +212,7 @@ class VerificationOutput(BaseModel):
 class RemediationAction(BaseModel):
     action: str = ""  # e.g., "block_ip", "disable_account", "isolate_host"
     target: str = ""  # e.g., the IP or username
-    is_destructive: bool = False
+    is_destructive: LenientBool = False
     details: str = ""
 
 
@@ -185,7 +224,7 @@ class RemediationOutput(BaseModel):
 
 class IncidentReport(BaseModel):
     summary: str = ""
-    severity: int = 1
+    severity: LenientInt = 1
     verdict: Verdict = Verdict.UNVERIFIED
     evidence_chain: list[str] = Field(default_factory=list)
     matched_mitre_techniques: list[str] = Field(default_factory=list)
@@ -213,6 +252,7 @@ class CaseDocument(BaseModel):
     investigation: Optional[InvestigationOutput] = None
     verification: Optional[VerificationOutput] = None
     remediation: Optional[RemediationOutput] = None
+    approval: Optional[dict[str, Any]] = None  # {required, status, requested_at/decided_at}
     report: Optional[IncidentReport] = None
 
     # Feedback loop

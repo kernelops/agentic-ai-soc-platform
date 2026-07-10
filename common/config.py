@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     groq_api_key: str = Field(default="", description="Groq API key for Llama 3.3 70B")
     groq_model: str = "llama-3.3-70b-versatile"
 
+    # --- Agentic layer ---
+    agent_llm_temperature: float = 0.0  # deterministic reasoning for reproducible triage/verdicts
+    agent_llm_max_tokens: int = 1024  # cap per-agent output to keep latency/rate-limit cost down
+    agent_max_retries: int = 5  # attempts for Groq rate-limit / transient errors (we drive backoff)
+    # Accounts we never auto-remediate against — verification hard-rejects these,
+    # routing the case to human review. Overridable via SOC_AGENT_NO_AUTOREMEDIATE_USERS.
+    agent_no_autoremediate_users: set[str] = Field(
+        default_factory=lambda: {"admin", "root"},
+        description="Privileged accounts that require human review (verification policy gate)",
+    )
+
     # --- AlienVault OTX ---
     otx_api_key: str = Field(default="", description="AlienVault OTX API key")
     otx_base_url: str = "https://otx.alienvault.com"

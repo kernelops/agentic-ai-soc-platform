@@ -16,5 +16,6 @@ COPY common/ /app/common/
 COPY correlation/ /app/correlation/
 COPY enrichment/ /app/enrichment/
 COPY rag/ /app/rag/
+COPY agents/ /app/agents/
 
 CMD ["python", "-m", "common.worker"]
