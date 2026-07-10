@@ -2,9 +2,10 @@
 RAG knowledge store backed by Qdrant + FastEmbed.
 
 This is the single abstraction the rest of the platform uses to talk to the
-vector store. The Phase 5 agent tools (query_mitre_attack, query_runbooks) are
-built against this exact interface, so swapping their stubs for real retrieval
-is a no-op for the agents.
+vector store. The Phase 5 agent tools (query_mitre_attack, query_runbooks) call
+into this via a synchronous interface, so the store is synchronous: embedding
+(FastEmbed) is CPU-bound and Qdrant calls are fast, and the worker processes
+alerts sequentially, so a blocking call here has no concurrency cost.
 
 Design:
 - Embeddings are computed locally with FastEmbed (ONNX, no external API). The
@@ -13,19 +14,16 @@ Design:
 - Qdrant point IDs must be UUIDs or ints, so human-readable doc IDs (e.g.
   "T1110") are mapped to a stable uuid5 and the original ID is kept in the
   payload. This makes ingestion idempotent — re-running updates in place.
-- Embedding is CPU-bound and runs in a thread so it never blocks the event
-  loop.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Any, Optional
 
 from fastembed import TextEmbedding
-from qdrant_client import AsyncQdrantClient, models
+from qdrant_client import QdrantClient, models
 
 from common.config import settings
 
@@ -43,9 +41,9 @@ COLLECTIONS = (MITRE_COLLECTION, RUNBOOKS_COLLECTION, PAST_CASES_COLLECTION)
 class RAGStore:
     """Vector-search knowledge store over MITRE ATT&CK, runbooks, and past cases."""
 
-    def __init__(self, client: Optional[AsyncQdrantClient] = None):
+    def __init__(self, client: Optional[QdrantClient] = None):
         # `client` injectable for testing (e.g. in-memory Qdrant).
-        self.client = client or AsyncQdrantClient(
+        self.client = client or QdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
         )
@@ -66,20 +64,17 @@ class RAGStore:
             )
         return self._embedder
 
-    async def _embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts (runs the CPU-bound model off the event loop)."""
-        def _run() -> list[list[float]]:
-            return [vec.tolist() for vec in self.embedder.embed(texts)]
-        return await asyncio.to_thread(_run)
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        return [vec.tolist() for vec in self.embedder.embed(texts)]
 
     # -- schema -------------------------------------------------------------
 
-    async def ensure_collections(self) -> None:
+    def ensure_collections(self) -> None:
         """Create the knowledge collections if they don't already exist."""
-        existing = {c.name for c in (await self.client.get_collections()).collections}
+        existing = {c.name for c in self.client.get_collections().collections}
         for name in COLLECTIONS:
             if name not in existing:
-                await self.client.create_collection(
+                self.client.create_collection(
                     collection_name=name,
                     vectors_config=models.VectorParams(
                         size=self.vector_size,
@@ -95,7 +90,7 @@ class RAGStore:
 
     # -- writes -------------------------------------------------------------
 
-    async def add_document(
+    def add_document(
         self,
         collection: str,
         doc_id: str,
@@ -103,9 +98,9 @@ class RAGStore:
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """Upsert a single document (used by the feedback loop)."""
-        await self.add_documents(collection, [(doc_id, text, metadata or {})])
+        self.add_documents(collection, [(doc_id, text, metadata or {})])
 
-    async def add_documents(
+    def add_documents(
         self,
         collection: str,
         docs: list[tuple[str, str, dict[str, Any]]],
@@ -113,7 +108,7 @@ class RAGStore:
         """Upsert a batch of (doc_id, text, metadata) tuples."""
         if not docs:
             return
-        vectors = await self._embed([text for _, text, _ in docs])
+        vectors = self._embed([text for _, text, _ in docs])
         points = [
             models.PointStruct(
                 id=self._point_id(collection, doc_id),
@@ -122,12 +117,12 @@ class RAGStore:
             )
             for (doc_id, text, metadata), vector in zip(docs, vectors)
         ]
-        await self.client.upsert(collection_name=collection, points=points)
+        self.client.upsert(collection_name=collection, points=points)
         logger.info("Upserted %d document(s) into '%s'", len(points), collection)
 
     # -- reads --------------------------------------------------------------
 
-    async def query(
+    def query(
         self,
         collection: str,
         text: str,
@@ -140,8 +135,8 @@ class RAGStore:
         ordered by relevance (highest cosine similarity first).
         """
         limit = n_results or self.n_results
-        vector = (await self._embed([text]))[0]
-        response = await self.client.query_points(
+        vector = self._embed([text])[0]
+        response = self.client.query_points(
             collection_name=collection,
             query=vector,
             limit=limit,
@@ -155,5 +150,5 @@ class RAGStore:
             results.append({"document": document, "metadata": metadata, "score": hit.score})
         return results
 
-    async def close(self) -> None:
-        await self.client.close()
+    def close(self) -> None:
+        self.client.close()

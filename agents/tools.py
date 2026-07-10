@@ -10,10 +10,11 @@ Two kinds of tool live here:
    LLM tool-calling loop) and hands the results to a single structured-output
    synthesis call.
 
-2. RAG stubs (`query_mitre_attack`, `query_runbooks`) — return hardcoded MITRE
-   ATT&CK / runbook data for now. Their signatures mirror what a future ChromaDB
-   `RAGStore.query(collection, text, n_results)` will provide, so Phase 4 swaps
-   the body without touching any caller.
+2. RAG-backed knowledge tools (`query_mitre_attack`, `query_runbooks`) —
+   semantic retrieval from the Qdrant-backed `RAGStore` (Phase 4). Each keeps a
+   built-in corpus as a graceful fallback, so the pipeline still works if the
+   vector store is unreachable or not yet ingested. Signatures are unchanged, so
+   the Investigation/Remediation callers were not modified.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any
 from common.config import settings
 from common.database import get_mongo_db
 from common.models import CorrelationContext
+from rag.store import MITRE_COLLECTION, RUNBOOKS_COLLECTION, RAGStore
 
 logger = logging.getLogger("soc.agents.tools")
 
@@ -185,7 +187,31 @@ def get_correlation_context(correlation: CorrelationContext | None) -> dict[str,
 
 
 # ---------------------------------------------------------------------------
-# RAG stubs — hardcoded now, ChromaDB-backed later (signatures are the contract)
+# RAG store accessor (lazy singleton, with graceful fallback)
+# ---------------------------------------------------------------------------
+
+_rag_store: RAGStore | None = None
+_rag_unavailable = False
+
+
+def _get_rag_store() -> RAGStore | None:
+    """Lazily construct the RAG store; return None if it can't be created."""
+    global _rag_store, _rag_unavailable
+    if _rag_store is not None:
+        return _rag_store
+    if _rag_unavailable:
+        return None
+    try:
+        _rag_store = RAGStore()
+        return _rag_store
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG store unavailable, using built-in knowledge fallback: %s", exc)
+        _rag_unavailable = True
+        return None
+
+
+# ---------------------------------------------------------------------------
+# RAG-backed knowledge tools (Qdrant retrieval, hardcoded corpus as fallback)
 # ---------------------------------------------------------------------------
 
 # 8 techniques relevant to insider-threat / common attack patterns.
@@ -283,32 +309,76 @@ def query_mitre_attack(evidence_summary: str, n_results: int = 3) -> list[dict[s
     """
     Return MITRE ATT&CK techniques matching an evidence summary.
 
-    STUB: keyword-scores the hardcoded corpus. Signature matches the future
-    RAGStore-backed retrieval (text in, ranked technique docs out).
+    Semantic retrieval from the Qdrant `mitre_attack` collection. Falls back to
+    the built-in keyword-scored corpus if the store is unavailable or empty, so
+    the pipeline never depends on RAG being reachable.
     """
+    store = _get_rag_store()
+    if store is not None:
+        try:
+            hits = store.query(MITRE_COLLECTION, evidence_summary or "", n_results=n_results)
+            results = [
+                {
+                    "technique_id": m["technique_id"],
+                    "name": m.get("name", ""),
+                    "description": m.get("description", ""),
+                    "detection": m.get("detection", ""),
+                }
+                for hit in hits
+                for m in [hit.get("metadata", {})]
+                if m.get("technique_id")
+            ]
+            if results:
+                logger.debug("query_mitre_attack (RAG) matched %d technique(s)", len(results))
+                return results
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RAG MITRE query failed, using fallback: %s", exc)
+    return _fallback_mitre(evidence_summary, n_results)
+
+
+def _fallback_mitre(evidence_summary: str, n_results: int) -> list[dict[str, Any]]:
+    """Keyword-scored retrieval over the built-in corpus (RAG unavailable)."""
     text = (evidence_summary or "").lower()
     scored: list[tuple[int, dict[str, Any]]] = []
     for tech in _MITRE_TECHNIQUES:
         score = sum(1 for kw in tech["keywords"] if kw in text)
         if score:
             scored.append((score, tech))
-
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    results = [
+    return [
         {k: t[k] for k in ("technique_id", "name", "description", "detection")}
         for _, t in scored[:n_results]
     ]
-    logger.debug("query_mitre_attack matched %d technique(s)", len(results))
-    return results
 
 
 def query_runbooks(alert_type: str, n_results: int = 1) -> dict[str, Any]:
     """
-    Return the response runbook for an alert type.
+    Return the response runbook best matching an alert type.
 
-    STUB: direct map over the hardcoded runbook library. Signature matches the
-    future RAGStore-backed retrieval.
+    Semantic retrieval from the Qdrant `runbooks` collection (top-1). Falls back
+    to the built-in runbook map if the store is unavailable or returns nothing.
     """
+    store = _get_rag_store()
+    if store is not None:
+        try:
+            hits = store.query(RUNBOOKS_COLLECTION, (alert_type or "").replace("_", " "),
+                               n_results=max(1, n_results))
+            if hits:
+                m = hits[0].get("metadata", {})
+                if m.get("runbook_id"):
+                    return {
+                        "runbook_id": m["runbook_id"],
+                        "title": m.get("title", ""),
+                        "steps": m.get("steps", []),
+                        "recommended_actions": m.get("recommended_actions", []),
+                    }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RAG runbook query failed, using fallback: %s", exc)
+    return _fallback_runbook(alert_type)
+
+
+def _fallback_runbook(alert_type: str) -> dict[str, Any]:
+    """Direct map over the built-in runbook library (RAG unavailable)."""
     runbook = _RUNBOOKS.get((alert_type or "").lower())
     if runbook is None:
         return {

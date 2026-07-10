@@ -5,13 +5,16 @@ Loads the curated MITRE ATT&CK techniques and response runbooks from
 rag/data/*.json and upserts them into Qdrant. Idempotent — re-running updates
 documents in place (stable IDs), so it's safe to run after editing the data.
 
+The payloads stored here are what the agent tools read back, so they carry the
+full fields the Investigation/Remediation agents consume (descriptions,
+detection guidance, steps, and recommended actions with destructive flags).
+
 Run once after the Qdrant service is up:
     docker compose run --rm worker python -m rag.ingest
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
@@ -53,10 +56,10 @@ def _load(filename: str) -> list[dict]:
     return json.loads((DATA_DIR / filename).read_text(encoding="utf-8"))
 
 
-async def main() -> None:
+def main() -> None:
     store = RAGStore()
     try:
-        await store.ensure_collections()
+        store.ensure_collections()
 
         # --- MITRE ATT&CK techniques ---
         techniques = _load("mitre_techniques.json")
@@ -68,11 +71,13 @@ async def main() -> None:
                     "technique_id": t["technique_id"],
                     "name": t["name"],
                     "tactic": t["tactic"],
+                    "description": t["description"],
+                    "detection": t.get("detection", ""),
                 },
             )
             for t in techniques
         ]
-        await store.add_documents(MITRE_COLLECTION, mitre_docs)
+        store.add_documents(MITRE_COLLECTION, mitre_docs)
 
         # --- Runbooks ---
         runbooks = _load("runbooks.json")
@@ -84,12 +89,13 @@ async def main() -> None:
                     "runbook_id": r["runbook_id"],
                     "title": r["title"],
                     "applies_to": r.get("applies_to", []),
-                    "actions": r.get("actions", []),
+                    "steps": r.get("steps", []),
+                    "recommended_actions": r.get("recommended_actions", []),
                 },
             )
             for r in runbooks
         ]
-        await store.add_documents(RUNBOOKS_COLLECTION, runbook_docs)
+        store.add_documents(RUNBOOKS_COLLECTION, runbook_docs)
 
         logger.info(
             "Ingestion complete: %d MITRE techniques, %d runbooks",
@@ -97,8 +103,8 @@ async def main() -> None:
             len(runbook_docs),
         )
     finally:
-        await store.close()
+        store.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
