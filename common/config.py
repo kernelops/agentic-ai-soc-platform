@@ -45,8 +45,13 @@ class Settings(BaseSettings):
     # --- Slack ---
     slack_webhook_url: str = Field(default="", description="Slack incoming webhook URL")
 
-    # --- ChromaDB ---
-    chroma_persist_dir: str = "/app/data/chromadb"
+    # --- RAG / Qdrant ---
+    qdrant_host: str = Field(default="qdrant", description="Qdrant service hostname")
+    qdrant_port: int = 6333  # REST API port
+    rag_embedding_model: str = "BAAI/bge-small-en-v1.5"  # FastEmbed model (local, ONNX)
+    rag_vector_size: int = 384  # embedding dimension for bge-small-en-v1.5
+    rag_embedding_cache_dir: str = "/app/models"  # pre-baked model cache (see Dockerfile)
+    rag_n_results: int = 3  # default number of documents returned per query
 
     # --- Correlation ---
     correlation_window_minutes: int = 30  # broad lookback for prior-alert fetch

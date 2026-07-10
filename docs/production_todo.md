@@ -54,6 +54,13 @@ current behavior is correct, these make it production-grade. Grouped by phase.
 - **Action:** Optionally move all shared flags onto a common parent parser so
   they work in one consistent position.
 
+## Phase 4 — RAG
+
+### 6. Pin the Qdrant image version
+- **Where:** `docker-compose.yml` → `qdrant` service (`image: qdrant/qdrant:latest`)
+- **What:** Using `latest` for development. Pin to a specific version for
+  reproducible builds before production.
+
 ## Environment notes (not code)
 
 - **Container egress to OTX:** occasional transient DNS/read flakiness observed

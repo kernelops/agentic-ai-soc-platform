@@ -1,0 +1,106 @@
+[
+  {
+    "technique_id": "T1110",
+    "name": "Brute Force",
+    "tactic": "Credential Access",
+    "description": "Adversaries attempt to gain access to accounts by systematically guessing passwords. This includes password guessing against a single account, password spraying a common password across many accounts, and credential stuffing using leaked username/password pairs. Repeated failed authentication attempts from a single source, often followed by a successful login, are the hallmark of this technique.",
+    "detection": "Look for a high volume of failed authentication events from the same source IP or against the same account within a short time window, especially when followed by a successful authentication. Monitor SSH, RDP, and web login logs for repeated failures.",
+    "indicators": [
+      "many failed login attempts from one source IP",
+      "repeated authentication failures for a single user",
+      "failed logins followed by a successful login",
+      "SSH or RDP password guessing"
+    ]
+  },
+  {
+    "technique_id": "T1078",
+    "name": "Valid Accounts",
+    "tactic": "Defense Evasion, Persistence, Privilege Escalation, Initial Access",
+    "description": "Adversaries obtain and abuse the credentials of legitimate accounts to gain initial access, persist, escalate privileges, or evade defenses. Because the activity uses valid credentials, it can blend in with normal user behavior. Compromised accounts may log in from unusual locations, at unusual times, or exhibit behavior that deviates from the user's established baseline.",
+    "detection": "Correlate successful logins with anomalies such as new source IPs, impossible travel, off-hours activity, or a deviation from the user's normal behavior. A successful login immediately after a brute force burst strongly suggests a compromised valid account.",
+    "indicators": [
+      "successful login after repeated failures",
+      "login from an unusual or malicious source IP",
+      "account activity outside normal baseline hours",
+      "use of legitimate credentials by an attacker"
+    ]
+  },
+  {
+    "technique_id": "T1548",
+    "name": "Abuse Elevation Control Mechanism",
+    "tactic": "Privilege Escalation, Defense Evasion",
+    "description": "Adversaries circumvent mechanisms designed to control elevated privileges to gain higher-level permissions. On Linux this commonly involves sudo and setuid/setgid binaries; on Windows it involves bypassing User Account Control (UAC). A user escalating to root via sudo shortly after logging in, particularly for the first time, can indicate privilege escalation following an account compromise.",
+    "detection": "Monitor sudo usage, especially first-time sudo by a user, changes to sudoers, and setuid binary execution. Correlate privilege escalation events with a recent successful login from the same user.",
+    "indicators": [
+      "first time user executed sudo",
+      "privilege escalation to root shortly after login",
+      "unexpected use of sudo or su",
+      "setuid binary abuse or UAC bypass"
+    ]
+  },
+  {
+    "technique_id": "T1048",
+    "name": "Exfiltration Over Alternative Protocol",
+    "tactic": "Exfiltration",
+    "description": "Adversaries steal data by transferring it over a protocol or channel different from the existing command-and-control channel, such as DNS, ICMP, FTP, or an unencrypted web protocol. Large or unusual outbound transfers to external hosts can indicate data being exfiltrated.",
+    "detection": "Watch for large outbound data volumes, connections to unexpected external destinations, and use of protocols not normally seen from a host (DNS tunneling, FTP uploads, unusual HTTP POST volume).",
+    "indicators": [
+      "large outbound data transfer to an external host",
+      "DNS tunneling or ICMP data transfer",
+      "unusual FTP or HTTP upload volume",
+      "data leaving the network over an unexpected protocol"
+    ]
+  },
+  {
+    "technique_id": "T1105",
+    "name": "Ingress Tool Transfer",
+    "tactic": "Command and Control",
+    "description": "Adversaries transfer tools or other files from an external system into a compromised environment, for example by downloading a payload with curl, wget, or scp after gaining access. This often follows an initial compromise and precedes further malicious activity.",
+    "detection": "Monitor for file downloads from external hosts shortly after a login or compromise, use of curl/wget/certutil to fetch remote files, and new executables appearing on a host.",
+    "indicators": [
+      "download of a payload via curl or wget",
+      "new executable file fetched from an external host",
+      "tool transfer following initial access",
+      "unexpected outbound connection retrieving a file"
+    ]
+  },
+  {
+    "technique_id": "T1531",
+    "name": "Account Access Removal",
+    "tactic": "Impact",
+    "description": "Adversaries interrupt availability of accounts by deleting, locking, or changing credentials to deny legitimate users access. This can include mass password changes, account deletions, or removing access to disrupt operations, often as part of destructive or extortion activity.",
+    "detection": "Alert on unexpected password changes, account lockouts, or account deletions, especially in bulk or performed by a recently compromised account.",
+    "indicators": [
+      "unexpected password change or reset",
+      "account deletion or lockout",
+      "bulk credential changes",
+      "legitimate users locked out of their accounts"
+    ]
+  },
+  {
+    "technique_id": "T1485",
+    "name": "Data Destruction",
+    "tactic": "Impact",
+    "description": "Adversaries destroy data and files on systems to interrupt availability, including overwriting or deleting files, wiping disks, or removing backups. This is often irreversible and used for sabotage or to cover tracks.",
+    "detection": "Monitor for mass file deletions or modifications, disk-wiping commands, deletion of backups or shadow copies, and file integrity events indicating large-scale removal or overwrite.",
+    "indicators": [
+      "mass file deletion or overwrite",
+      "disk wiping activity",
+      "deletion of backups or shadow copies",
+      "large-scale file integrity changes"
+    ]
+  },
+  {
+    "technique_id": "T1083",
+    "name": "File and Directory Discovery",
+    "tactic": "Discovery",
+    "description": "Adversaries enumerate files and directories to understand the environment and locate valuable data before further action. This reconnaissance often uses commands like ls, find, dir, or tree and may precede collection, exfiltration, or destruction.",
+    "detection": "Look for enumeration commands run shortly after a login, unusual scanning of directory trees, and access patterns that touch many files or sensitive paths in a short time.",
+    "indicators": [
+      "enumeration of files and directories",
+      "use of find, ls, or dir for reconnaissance",
+      "scanning of sensitive directory paths",
+      "discovery activity following initial access"
+    ]
+  }
+]

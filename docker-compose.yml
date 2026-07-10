@@ -45,6 +45,22 @@ services:
       - soc-network
 
   # ---------------------------------------------------------------------------
+  # Qdrant — vector store for the RAG knowledge layer (MITRE, runbooks, cases)
+  # ---------------------------------------------------------------------------
+  qdrant:
+    # NOTE: pin to a specific version for production reproducibility (see
+    # docs/production_todo.md). Using latest for initial development.
+    image: qdrant/qdrant:latest
+    container_name: soc-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - soc-network
+
+  # ---------------------------------------------------------------------------
   # Ingestion Service — FastAPI receiving Wazuh webhooks
   # ---------------------------------------------------------------------------
   ingestion:
@@ -79,6 +95,8 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     networks:
       - soc-network
 
@@ -88,6 +106,7 @@ services:
 volumes:
   redis-data:
   mongo-data:
+  qdrant-data:
 
 networks:
   # The main stack OWNS this network (fixed name so the separate Wazuh compose

@@ -1,0 +1,92 @@
+[
+  {
+    "runbook_id": "rb_ssh_brute_force",
+    "title": "SSH Brute Force Response",
+    "applies_to": ["brute_force", "auth_failure", "credential_access"],
+    "summary": "Response steps for a burst of failed SSH/RDP logins indicating password guessing, spraying, or credential stuffing against one or more accounts.",
+    "steps": [
+      "Identify the source IP(s) generating the failed authentication attempts and the targeted account(s).",
+      "Block the offending source IP at the host firewall or perimeter (e.g. iptables/nftables deny, or security group rule).",
+      "Confirm whether any attempt succeeded; if so, treat the account as potentially compromised and follow the account compromise runbook.",
+      "Enforce or verify rate limiting and lockout policy (e.g. fail2ban, PAM tally) on the affected service.",
+      "Require a password reset for targeted accounts and recommend MFA where possible.",
+      "Preserve the relevant auth logs for the case record."
+    ],
+    "actions": ["block_ip", "reset_password", "enable_rate_limiting"]
+  },
+  {
+    "runbook_id": "rb_account_compromise",
+    "title": "Account Compromise Response",
+    "applies_to": ["valid_accounts", "brute_force_then_login", "account_takeover"],
+    "summary": "Response steps when a legitimate account is believed to be compromised, for example a successful login following a brute force burst or a login from a malicious source.",
+    "steps": [
+      "Disable or suspend the affected account immediately to stop further access.",
+      "Terminate the account's active sessions and revoke active tokens or keys.",
+      "Reset the account credentials and require re-enrollment of MFA.",
+      "Review the account's recent activity for privilege escalation, lateral movement, data access, or persistence.",
+      "Block the malicious source IP(s) associated with the compromise.",
+      "Document the timeline and scope of access for the incident record."
+    ],
+    "actions": ["disable_account", "revoke_sessions", "reset_password", "block_ip"]
+  },
+  {
+    "runbook_id": "rb_privilege_escalation",
+    "title": "Privilege Escalation Response",
+    "applies_to": ["priv_esc", "privilege_escalation", "sudo_abuse"],
+    "summary": "Response steps when a user unexpectedly escalates privileges, such as first-time sudo to root shortly after login or abuse of a setuid binary.",
+    "steps": [
+      "Confirm whether the privilege escalation was authorized for that user and host.",
+      "If unauthorized, disable the account and isolate the host from the network.",
+      "Review sudo, auth, and command history for actions taken with elevated privileges.",
+      "Check for new users, cron jobs, SSH keys, or services created for persistence.",
+      "Restore affected configuration and rotate any credentials or keys exposed during the elevated session.",
+      "Capture the evidence and escalate to human review before destructive remediation on privileged accounts."
+    ],
+    "actions": ["disable_account", "isolate_host", "review_persistence"]
+  },
+  {
+    "runbook_id": "rb_file_integrity",
+    "title": "File Integrity Violation Response",
+    "applies_to": ["file_integrity", "syscheck", "unauthorized_change"],
+    "summary": "Response steps for unauthorized changes to monitored files or directories detected by file integrity monitoring.",
+    "steps": [
+      "Identify the changed file(s), the type of change (created/modified/deleted), and the host affected.",
+      "Determine whether the change corresponds to an approved change or deployment window.",
+      "If unauthorized, isolate the host and preserve the affected files for analysis.",
+      "Compare against a known-good baseline and restore legitimate content from backup.",
+      "Investigate the process and user account responsible for the change.",
+      "Check for related indicators such as new binaries, tampered system files, or backdoors."
+    ],
+    "actions": ["isolate_host", "restore_from_backup", "investigate_process"]
+  },
+  {
+    "runbook_id": "rb_data_exfiltration",
+    "title": "Data Exfiltration Response",
+    "applies_to": ["exfiltration", "data_access", "network_anomaly"],
+    "summary": "Response steps when data appears to be leaving the environment over an unexpected channel or in unusual volume.",
+    "steps": [
+      "Identify the source host, destination, protocol, and volume of the suspicious transfer.",
+      "Block the destination and the exfiltration channel at the perimeter.",
+      "Isolate the source host to prevent further data loss.",
+      "Determine what data was accessed or transferred and assess sensitivity and regulatory impact.",
+      "Identify the account and process responsible and disable them if malicious.",
+      "Engage incident response and, if required, legal/compliance for breach handling."
+    ],
+    "actions": ["block_destination", "isolate_host", "assess_data_impact"]
+  },
+  {
+    "runbook_id": "rb_data_destruction",
+    "title": "Data Destruction Response",
+    "applies_to": ["data_destruction", "impact", "ransomware"],
+    "summary": "Response steps for mass file deletion, disk wiping, or destruction of backups indicating sabotage or ransomware impact.",
+    "steps": [
+      "Isolate affected hosts immediately to halt ongoing destruction.",
+      "Identify the scope of destroyed or encrypted data and whether backups are intact.",
+      "Disable the account and terminate the process performing the destruction.",
+      "Preserve forensic evidence before any restoration.",
+      "Restore data from the most recent clean backup and validate integrity.",
+      "Escalate to incident response leadership given the high business impact."
+    ],
+    "actions": ["isolate_host", "disable_account", "restore_from_backup"]
+  }
+]
