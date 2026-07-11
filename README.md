@@ -1,194 +1,134 @@
 # Agentic AI SOC Platform
 
-An Agentic AI–powered Security Operations Center (SOC) platform integrating Wazuh SIEM, rule-based correlation, threat-intelligence enrichment, a LangGraph multi-agent pipeline, RAG-based security knowledge, human approval gates, a read API, and a dashboard UI for automated incident investigation and response.
+An agentic, AI-powered Security Operations Center. Security alerts (from Wazuh, or replayed as realistic JSON) are ingested, correlated, enriched with threat intelligence, and then investigated end-to-end by a pipeline of LLM agents that triage, investigate, verify, and draft remediation — pausing for human approval before anything destructive. Everything is observable in a dashboard UI and behind a TLS/mTLS gateway.
 
-## What works today (Phases 0–5 + API + UI)
-
-An ingested alert flows end to end:
+## What it does
 
 ```
-alert (curl) → ingestion (FastAPI) → Redis → worker
-     → correlation (rules) → enrichment (OTX + asset + history)
-     → agentic pipeline (triage → investigation → verification → remediation → approval → reporting)
-     → MongoDB case  →  API  →  Dashboard UI
+alert → ingestion (FastAPI) → Redis → worker
+  → correlation (rules)      : brute force, brute-force-then-login, priv-esc-after-login
+  → enrichment               : AlienVault OTX reputation + asset criticality + case history
+  → agentic pipeline (Groq)  : triage → investigation → verification → remediation → approval → reporting
+  → MongoDB case → read API → dashboard UI
+
+served over an nginx TLS/mTLS gateway · metrics scraped by Prometheus/Grafana
 ```
 
-- **Ingestion** — normalizes Wazuh JSON, queues to Redis.
-- **Correlation** — rules-based patterns (brute force, brute-force-then-login, priv-esc-after-login).
-- **Enrichment** — AlienVault OTX reputation, asset criticality, historical case lookup.
-- **Agents** — LangGraph pipeline on Groq (Llama 3.3 70B) with a human approval gate for destructive actions.
-- **RAG** — Qdrant + FastEmbed knowledge base (MITRE ATT&CK techniques + response runbooks) grounding the agents.
-- **API** — FastAPI read/query service powering the UI (`:8081`).
-- **UI** — React dashboard with 7 tabs (`:3000` in Docker, `:5173` in dev).
+- **Ingestion** — normalizes Wazuh JSON and queues it to Redis.
+- **Correlation** — deterministic rules that link related alerts across IP / user / host.
+- **Enrichment** — OTX IP reputation, asset criticality, and prior-case lookup.
+- **Agents** — a LangGraph pipeline on Groq (Llama 3.3 70B), grounded in a **RAG** knowledge base (Qdrant + FastEmbed: MITRE ATT&CK techniques + response runbooks), with a **human approval gate** for destructive actions.
+- **API + UI** — a FastAPI read/query service and a React dashboard (Dashboard, Alerts, Correlation, Enrichment, Agent Ops, System Health, Analytics).
+- **Observability** — Prometheus + Grafana + cAdvisor.
+- **Security** — an nginx edge gateway terminating TLS, enforcing **mutual TLS** on the approve/reject actions.
 
-Observability (Prometheus/Grafana) and mTLS are not yet wired in.
+Every ingested alert becomes one **case** document in MongoDB that accumulates data as it moves through the pipeline; the UI tabs are different lenses on that collection.
 
-## Directory structure
+## Architecture
 
-- `ingestion/` — FastAPI service parsing/normalizing Wazuh alerts.
+- `ingestion/` — FastAPI webhook that parses/normalizes Wazuh alerts.
 - `correlation/` — rules-based correlation engine + classifier.
 - `enrichment/` — OTX threat intel, asset context, historical lookup.
-- `agents/` — LangGraph agent pipeline (dispatcher, triage, investigation, verification, remediation, approval, reporting).
+- `agents/` — LangGraph agent pipeline (dispatcher → triage → investigation → verification → remediation → approval → reporting).
 - `rag/` — Qdrant-backed knowledge store + ingest script + MITRE/runbook data.
 - `api/` — read/query API + case actions powering the UI.
 - `frontend/` — React + Vite + TypeScript + Tailwind dashboard.
-- `common/` — shared config, database clients, Pydantic models, pipeline worker.
-- `infrastructure/` — Wazuh stack, and (later) NGINX/PKI/Prometheus/Grafana.
-- `tests/` — the curl-based alert sender and fixtures.
+- `common/` — shared config, database clients, Pydantic models, and the pipeline worker.
+- `infrastructure/` — nginx gateway, PKI cert generation, Prometheus/Grafana, and the Wazuh stack.
+- `tests/` — the curl-based alert sender, fixtures, and the mTLS demo script.
 - `docs/` — design notes and the production-hardening TODO.
 
 ---
 
 ## Prerequisites
 
-- Docker + Docker Compose
-- Node.js 18+ and npm (only if you want to run the UI in dev mode)
-- A **Groq API key** (required for the agent pipeline) — the agents need this
-- An **AlienVault OTX API key** (optional — enables live IP threat intel)
+- **Docker + Docker Compose** (runs the entire stack; no local Python/Node needed).
+- A **Groq API key** — required for the agent pipeline.
+- An **AlienVault OTX API key** — optional; enables live IP threat intelligence.
+- (Optional) **Node.js 18+** only if you want to run the UI in hot-reload dev mode.
 
-Copy the env template and fill in your keys:
+---
+
+## Set up & run the whole project
+
+### 1. Configure environment
 
 ```bash
 cp .env.example .env
-# set at minimum:
+# then edit .env and set at minimum:
 #   SOC_GROQ_API_KEY=<your groq key>
-#   SOC_OTX_API_KEY=<your otx key>   # optional
+#   SOC_OTX_API_KEY=<your otx key>    # optional
 ```
 
----
+### 2. Generate the TLS/mTLS certificates
 
-## End-to-end test
-
-### 1. Start the backend stack
-
-The main stack owns the shared `soc-network`, so no manual network setup is needed.
-
-```bash
-docker compose up -d --build redis mongodb qdrant ingestion api worker
-docker compose ps
-```
-
-Expect `soc-redis`, `soc-mongodb`, `soc-qdrant`, `soc-ingestion`, `soc-api`, and `soc-worker` all running (redis/mongo report healthy).
-
-### 2. Confirm the Groq key reached the worker
-
-```bash
-docker exec soc-worker python -c "from common.config import settings; print('groq key length:', len(settings.groq_api_key), '| model:', settings.groq_model)"
-```
-
-A non-zero length means the agents can run. If it prints `0`, set `SOC_GROQ_API_KEY` in `.env` and rerun step 1.
-
-### 3. Populate the RAG knowledge base (Qdrant)
-
-```bash
-docker compose run --rm worker python -m rag.ingest
-```
-
-Expect `Ingestion complete: 8 MITRE techniques, 7 runbooks`. Verify:
-
-```bash
-curl -s http://localhost:6333/collections | python3 -m json.tool
-```
-
-### 4. Sanity-check the API
-
-```bash
-curl -s http://localhost:8081/api/v1/health
-curl -s "http://localhost:8081/api/v1/system/health" | python3 -m json.tool | head -30
-```
-
-Interactive API docs: **http://localhost:8081/docs**
-
-### 5. Start the UI
-
-**Option A — dev mode (fast, shows build errors):**
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open **http://localhost:5173** (Vite proxies `/api` and the WebSocket to the API on `:8081`).
-
-**Option B — containerized (nginx):**
-
-```bash
-docker compose up -d --build ui
-```
-
-Open **http://localhost:3000**.
-
-### 6. Drive the pipeline with realistic Wazuh alerts
-
-Until the live Wazuh + Kali-agent setup is wired (see `infrastructure/wazuh/README.md`), the pipeline is exercised with genuine Wazuh alert JSON sent over HTTP:
-
-```bash
-# Benign case (single failed login then success) — expect false_positive, auto-closed
-python tests/send_alerts.py alice
-
-# Attack case (brute-force burst -> login -> sudo priv-esc, same IP/user)
-python tests/send_alerts.py bob --count 5
-
-# Attack from a real public IP — exercises live OTX threat intel
-python tests/send_alerts.py bob --srcip 185.220.101.1
-
-# Send a single canonical fixture
-python tests/send_alerts.py fixture sudo_privesc
-```
-
-Give the agent pipeline a minute per burst — it makes several sequential Groq calls per alert and backs off on free-tier rate limits (this is expected and handled).
-
-### 7. What to check in the UI
-
-- **Footer** — "WS Connected", live queue depth, alerts/hr, worker dot, model `llama-3.3-70b-versatile`.
-- **Dashboard** — counters, alert-volume chart, top attacked assets.
-- **Alerts** — filterable/searchable table; Export JSON; row → detail drawer.
-- **Correlation** — pattern chips; select a case → its linked alert cluster.
-- **Enrichment** — the `185.220.101.1` case shows a malicious OTX badge; asset criticality mix.
-- **Agent Ops** — open a bob case → Triage → Investigation (verdict `true_positive`, MITRE **T1110/T1548**) → Verification → Remediation → **Approve / Reject** on `pending_approval` cases.
-- **System Health** — a card per service with up/down status and latency.
-- **Analytics** — alert volume by severity, verdict distribution, resolution stats.
-
-### 8. Verify from the database (optional)
-
-```bash
-# Alice -> benign
-docker exec soc-mongodb mongosh --quiet --eval "db=db.getSiblingDB('soc_platform'); db.cases.find({'alert.user':'alice'},{status:1,'investigation.verdict':1}).sort({created_at:-1}).limit(1).pretty()"
-
-# Bob -> true positive, pending approval, MITRE + runbook remediation
-docker exec soc-mongodb mongosh --quiet --eval "db=db.getSiblingDB('soc_platform'); db.cases.find({'alert.user':'baduser'},{status:1,'investigation.verdict':1,'investigation.matched_mitre_techniques':1,'verification.verified':1,'remediation.runbook_reference':1}).sort({created_at:-1}).limit(2).pretty()"
-```
-
----
-
-## Secure access — TLS + mTLS gateway (Phase 7)
-
-An nginx edge gateway (`soc-gateway`) is the single HTTPS entrypoint on port 443. It terminates TLS and enforces **mutual TLS (a client certificate)** on the destructive analyst actions (`approve` / `reject`) — the human-approval gate — while the dashboard, read APIs, live WebSocket, and Grafana stay open over plain TLS.
-
-### 1. Generate the PKI (once per machine)
+The gateway won't start without these. Run once (regenerate anytime with `--force`):
 
 ```bash
 bash infrastructure/pki/generate_certs.sh
 ```
 
-Creates a root CA, the gateway server cert, and an analyst client cert + `analyst.p12` (browser-import password: `analyst`) under `infrastructure/pki/`. These are git-ignored — never committed.
+Creates a root CA, the gateway server cert, and an analyst client cert + `analyst.p12` (browser-import password: `analyst`) under `infrastructure/pki/`. All key/cert material is git-ignored.
 
-### 2. Start the gateway
+### 3. Launch the full stack
 
 ```bash
-docker compose up -d --build gateway
+docker compose up -d --build
 ```
 
-Browse to **https://localhost** (trust `infrastructure/pki/ca.crt`, or accept the self-signed warning). The direct dev ports (`:3000`, `:8081`, `:3001`, …) still work but are unauthenticated conveniences — in production only the gateway would be exposed.
-
-### 3. mTLS in action
+This builds and starts everything: redis, mongodb, qdrant, ingestion, worker, api, ui, prometheus, grafana, cadvisor, and the gateway. **The first build takes several minutes** (frontend build + the embedding model is baked into the worker image). Check it came up:
 
 ```bash
-# reads work over TLS with no client cert
+docker compose ps
+```
+
+### 4. Load the RAG knowledge base
+
+```bash
+docker compose run --rm worker python -m rag.ingest
+```
+
+Expect `Ingestion complete: 8 MITRE techniques, 7 runbooks`.
+
+### 5. Send some alerts through the pipeline
+
+Until live Wazuh is wired in (see `infrastructure/wazuh/README.md`), drive it with realistic Wazuh alert JSON:
+
+```bash
+python3 tests/send_alerts.py alice                      # benign -> false positive, auto-closed
+python3 tests/send_alerts.py bob --count 5              # attack -> true positive -> pending approval
+python3 tests/send_alerts.py bob --srcip 185.220.101.1  # attack from a real public IP (live OTX hit)
+```
+
+Give the agents a minute per burst — they make several sequential Groq calls per alert and back off on free-tier rate limits (expected and handled).
+
+> `send_alerts.py` uses only the Python standard library, so no `pip install` is needed.
+
+### 6. Open the dashboard
+
+| What | URL |
+|---|---|
+| **Dashboard (secure, via gateway)** | **https://localhost** — trust `infrastructure/pki/ca.crt` or accept the self-signed warning |
+| Dashboard (direct, dev convenience) | http://localhost:3000 |
+| API docs (Swagger) | http://localhost:8081/docs |
+| Grafana | http://localhost:3001 |
+| Prometheus | http://localhost:9090 |
+
+In the UI: the **Dashboard** shows live counters and charts; **Alerts** lists every case with filters and a drill-down drawer; **Agent Ops** walks each agent's output and exposes **Approve/Reject** on pending cases; **System Health** shows every container's status.
+
+---
+
+## mTLS demo (Phase 7 highlight)
+
+The approve/reject actions — the human-approval gate for destructive remediation — require a client certificate at the gateway. Reads, the dashboard, and Grafana stay open over plain TLS.
+
+**In the terminal:**
+
+```bash
+# read works with no client cert
 curl --cacert infrastructure/pki/ca.crt https://localhost/api/v1/health
 
-# approving a destructive action WITHOUT a client cert is blocked at the gateway
+# approving WITHOUT a client cert is blocked at the gateway
 curl --cacert infrastructure/pki/ca.crt -X POST \
   https://localhost/api/v1/cases/<case_id>/approve            # -> 403
 
@@ -198,13 +138,13 @@ curl --cacert infrastructure/pki/ca.crt \
   -X POST https://localhost/api/v1/cases/<case_id>/approve    # -> 200
 ```
 
-Or run the full scripted demo (alice + bob + the mTLS proof, auto-picking a pending case):
+Or run the scripted demo (sends alice + bob, then proves the gate on a real pending case):
 
 ```bash
 bash tests/demo_attack.sh
 ```
 
-To approve from the **browser UI** over the gateway, import `infrastructure/pki/analyst.p12` (password `analyst`) into your browser's personal certificates; the browser offers it when the gateway requests a client cert.
+**In the browser:** open `https://localhost` and check the header badge — **"mTLS: no cert"** (amber) means approvals will be blocked. Import `infrastructure/pki/analyst.p12` (password `analyst`) into your browser's personal certificates, reload, and select the cert; the badge turns green (**"mTLS: analyst"**) and Approve/Reject now succeed. Trying to approve without it shows a red *"Blocked by mTLS"* banner. (Tip: use two browser profiles — one with the cert, one without — for a clean side-by-side.)
 
 ---
 
@@ -212,29 +152,56 @@ To approve from the **browser UI** over the gateway, import `infrastructure/pki/
 
 | Service | Port | Notes |
 |---|---|---|
-| Gateway (HTTPS) | 443 / 80 | mTLS edge — the secure entrypoint (Phase 7) |
+| Gateway (HTTPS) | 443 / 80 | mTLS edge — the secure entrypoint |
 | UI (nginx) | 3000 | Docker build of the dashboard |
-| UI (Vite dev) | 5173 | `npm run dev`, proxies to API |
+| UI (Vite dev) | 5173 | `npm run dev`, proxies to the API |
 | Ingestion API | 8000 | Wazuh webhook + health |
 | Read API | 8081 | Powers the UI; docs at `/docs` |
+| Grafana | 3001 | Also embeddable at `/grafana/` |
+| Prometheus | 9090 | Metrics scraper |
+| Worker metrics | 9100 | Prometheus exporter |
+| cAdvisor | 8082 | Container metrics |
 | Qdrant | 6333 / 6334 | Vector store REST / gRPC |
 | Redis | 6380 | Host port (container 6379) |
 | MongoDB | 27018 | Host port (container 27017) |
 
-## Reset to a clean slate
+---
+
+## Everyday operations
+
+**Run the UI in hot-reload dev mode** (needs Node; proxies `/api` to `:8081`):
+
+```bash
+cd frontend && npm install && npm run dev    # http://localhost:5173
+```
+
+**Reset the case data to a clean slate:**
 
 ```bash
 docker exec soc-mongodb mongosh --quiet --eval "db=db.getSiblingDB('soc_platform'); db.cases.deleteMany({}); db.recent_alerts.deleteMany({}); print('cleared')"
 ```
 
+**Tail the pipeline worker:**
+
+```bash
+docker logs -f soc-worker
+```
+
+**Stop / tear down:**
+
+```bash
+docker compose down            # stop; keep data volumes
+docker compose down -v         # also wipe redis/mongo/qdrant/grafana volumes
+```
+
+---
+
 ## Troubleshooting
 
-- **Cases stuck before `reporting`, or verdict `unverified`** — the agent hit Groq rate limits and exhausted retries. Re-run with fewer alerts, or use a higher Groq tier.
-- **`otx_reputation: null` for a public IP** — OTX can be slow for heavily-referenced IPs; the first lookup per IP is cached. Internal `10.0.0.x` IPs are intentionally not looked up.
-- **UI shows no data** — confirm the API is healthy (`curl :8081/api/v1/health`) and that you've sent alerts (step 6).
-- **Worker shows "down" in System Health** — the worker refreshes a Redis heartbeat each loop; if it's down, check `docker logs soc-worker`.
+- **Cases stuck before `reporting`, or verdict `unverified`** — the agents hit Groq rate limits and exhausted retries. Send fewer alerts at once, or use a higher Groq tier.
+- **`otx_reputation: null` for a public IP** — OTX can be slow for heavily-referenced IPs; the first lookup per IP is cached, and internal `10.0.0.x` IPs are intentionally skipped.
+- **Gateway returns 502** — a backend was recreated and the gateway hasn't re-resolved it yet (auto-heals within ~30s), or the container is down. Check `docker compose ps` and `docker logs soc-gateway`.
+- **UI shows no data** — confirm the API is healthy (`curl http://localhost:8081/api/v1/health`) and that you've sent alerts (step 5).
+- **Worker shows "down" in System Health** — it refreshes a Redis heartbeat each loop; check `docker logs soc-worker`.
 
-## Notes for contributors
-
-- Every ingested alert becomes one **case** document in MongoDB that accumulates data as it moves through the pipeline; the UI tabs are different lenses on that collection.
-- Deferred production-hardening items are tracked in `docs/production_todo.md`.
+Deferred production-hardening items are tracked in `docs/production_todo.md`.
