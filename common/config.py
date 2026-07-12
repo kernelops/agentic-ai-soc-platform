@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     ingestion_auth_token: str = Field(default="soc-ingest-token-dev", description="Bearer token for the ingestion webhook")
 
     # --- Groq LLM ---
-    groq_api_key: str = Field(default="", description="Groq API key for Llama 3.3 70B")
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_api_key: str = Field(default="", description="Groq API key")
+    # 8B default: much higher free-tier rate limits than 70B, and fast. Override
+    # with SOC_GROQ_MODEL (e.g. llama-3.3-70b-versatile for stronger reasoning).
+    groq_model: str = "llama-3.1-8b-instant"
 
     # --- Agentic layer ---
     agent_llm_temperature: float = 0.0  # deterministic reasoning for reproducible triage/verdicts

@@ -17,7 +17,7 @@ served over an nginx TLS/mTLS gateway · metrics scraped by Prometheus/Grafana
 - **Ingestion** — normalizes Wazuh JSON and queues it to Redis.
 - **Correlation** — deterministic rules that link related alerts across IP / user / host.
 - **Enrichment** — OTX IP reputation, asset criticality, and prior-case lookup.
-- **Agents** — a LangGraph pipeline on Groq (Llama 3.3 70B), grounded in a **RAG** knowledge base (Qdrant + FastEmbed: MITRE ATT&CK techniques + response runbooks), with a **human approval gate** for destructive actions.
+- **Agents** — a LangGraph pipeline on Groq (Llama 3.1 8B by default, configurable via `SOC_GROQ_MODEL`), grounded in a **RAG** knowledge base (Qdrant + FastEmbed: MITRE ATT&CK techniques + response runbooks), with a **human approval gate** for destructive actions.
 - **API + UI** — a FastAPI read/query service and a React dashboard (Dashboard, Alerts, Correlation, Enrichment, Agent Ops, System Health, Analytics).
 - **Observability** — Prometheus + Grafana + cAdvisor.
 - **Security** — an nginx edge gateway terminating TLS, enforcing **mutual TLS** on the approve/reject actions.
@@ -96,7 +96,7 @@ Until live Wazuh is wired in (see `infrastructure/wazuh/README.md`), drive it wi
 
 ```bash
 python3 tests/send_alerts.py alice                      # benign -> false positive, auto-closed
-python3 tests/send_alerts.py bob --count 5              # attack -> true positive -> pending approval
+python3 tests/send_alerts.py bob --count 3              # attack -> true positive -> pending approval
 python3 tests/send_alerts.py bob --srcip 185.220.101.1  # attack from a real public IP (live OTX hit)
 ```
 
@@ -115,6 +115,39 @@ Give the agents a minute per burst — they make several sequential Groq calls p
 | Prometheus | http://localhost:9090 |
 
 In the UI: the **Dashboard** shows live counters and charts; **Alerts** lists every case with filters and a drill-down drawer; **Agent Ops** walks each agent's output and exposes **Approve/Reject** on pending cases; **System Health** shows every container's status.
+
+---
+
+## Run the guided demo
+
+`tests/demo_presentation.sh` walks the whole platform end to end, **paced with pauses** so you can narrate and switch dashboard tabs between steps. It runs four scenarios:
+
+1. **Benign login (Alice)** — one failed login then a success → the agents rule it a **false positive**, auto-closed.
+2. **Brute-force intrusion (Bob)** — 3 failed logins → a successful login → first-time sudo. Correlation links them (`brute_force` → `brute_force_then_login` → `priv_esc_after_login`), the agents rule **true positive**, match MITRE **T1110 + T1548**, propose destructive remediation, and **pause for approval**.
+3. **Known-malicious source** — the same attack from a real public IP, lighting up **OTX threat intel**.
+4. **Human approval gate + mTLS** — approving the pending case **without** a client cert is blocked (403); **with** the analyst cert it succeeds (200).
+
+**Before running**, make sure setup steps 1–4 above are done: stack up (`docker compose ps`), certs generated, RAG ingested, and `SOC_GROQ_API_KEY` set. Then, for a clean board and a smooth run (pre-warm absorbs the first Groq rate-limit backoff):
+
+```bash
+# clean slate
+docker exec soc-mongodb mongosh --quiet --eval "db=db.getSiblingDB('soc_platform'); db.cases.deleteMany({}); db.recent_alerts.deleteMany({}); print('cleared')"
+docker exec soc-redis redis-cli del alerts:incoming alerts:dlq
+
+# pre-warm once, wait, then clear again (optional but smoother)
+python3 tests/send_alerts.py bob --count 3 && sleep 90
+docker exec soc-mongodb mongosh --quiet --eval "db=db.getSiblingDB('soc_platform'); db.cases.deleteMany({}); db.recent_alerts.deleteMany({}); print('cleared')"
+```
+
+Open the dashboard at **https://localhost** alongside your terminal, then run:
+
+```bash
+bash tests/demo_presentation.sh
+```
+
+Press **Enter** at each pause to advance, switching to the UI tab it names. For a non-interactive version (no pauses — just alice + bob + the mTLS proof) use `bash tests/demo_attack.sh`.
+
+> Tip: keep a second terminal on `docker logs -f soc-worker` to show the agents reasoning live. If a step reports "no pending-approval case yet," the agents are still running (or rate-limited) — wait a moment and re-run that step.
 
 ---
 

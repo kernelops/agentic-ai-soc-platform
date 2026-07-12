@@ -56,7 +56,7 @@ python3 tests/send_alerts.py alice
 line
 echo "[2/4] Sending BOB (attack) — expect true positive -> pending approval"
 line
-python3 tests/send_alerts.py bob --count 5
+python3 tests/send_alerts.py bob --count 3
 
 line
 echo "[3/4] Waiting for the agent pipeline to reach a pending-approval case..."
